@@ -1,0 +1,11 @@
+# Cloud Function dependencies
+functions-framework==3.*
+flask>=3.0.0
+
+# GCP
+google-cloud-storage>=2.14.0
+google-cloud-firestore>=2.14.0
+
+# Core
+pydantic>=2.5.0
+python-dotenv>=1.0.0

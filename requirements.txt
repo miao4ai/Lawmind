@@ -1,0 +1,43 @@
+# Core dependencies
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+httpx>=0.26.0
+python-multipart>=0.0.6
+
+# GCP
+google-cloud-storage>=2.14.0
+google-cloud-firestore>=2.14.0
+google-cloud-pubsub>=2.19.0
+google-cloud-logging>=3.9.0
+google-cloud-aiplatform>=1.40.0
+
+# AI/ML
+openai>=1.10.0
+anthropic>=0.18.0
+langchain>=0.1.0
+langchain-openai>=0.0.5
+sentence-transformers>=2.3.0
+
+# Vector DB
+qdrant-client>=1.7.0
+
+# OCR
+pytesseract>=0.3.10
+pdf2image>=1.17.0
+pillow>=10.2.0
+
+# Document Processing
+pypdf>=4.0.0
+pymupdf>=1.23.0
+
+# Observability
+opentelemetry-api>=1.22.0
+opentelemetry-sdk>=1.22.0
+opentelemetry-exporter-gcp-trace>=1.6.0
+
+# Utils
+python-dotenv>=1.0.0
+tenacity>=8.2.3
+structlog>=24.1.0

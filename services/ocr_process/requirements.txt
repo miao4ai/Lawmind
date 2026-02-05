@@ -1,0 +1,13 @@
+# Cloud Function dependencies
+functions-framework==3.*
+
+# GCP
+google-cloud-storage>=2.14.0
+google-cloud-firestore>=2.14.0
+google-cloud-pubsub>=2.19.0
+google-cloud-vision>=3.5.0
+
+# Core
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+tenacity>=8.2.3

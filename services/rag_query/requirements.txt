@@ -1,0 +1,23 @@
+# Cloud Function dependencies
+functions-framework==3.*
+flask>=3.0.0
+
+# Core dependencies (same as root)
+fastapi>=0.109.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+httpx>=0.26.0
+
+# GCP
+google-cloud-storage>=2.14.0
+google-cloud-firestore>=2.14.0
+google-cloud-logging>=3.9.0
+
+# AI/ML
+openai>=1.10.0
+qdrant-client>=1.7.0
+
+# Utils
+python-dotenv>=1.0.0
+structlog>=24.1.0
+tenacity>=8.2.3
