@@ -99,9 +99,7 @@ class MamimindAPI {
    * Complete upload and trigger OCR
    */
   async completeUpload(docId: string): Promise<void> {
-    // This would trigger Pub/Sub event in real implementation
-    // For now, the upload to Cloud Storage triggers the event automatically
-    console.log('Upload completed for doc:', docId);
+    await this.client.post(`/complete/${docId}`);
   }
 
   /**
