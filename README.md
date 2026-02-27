@@ -40,7 +40,7 @@ See [docs/architecture.md](docs/architecture.md) for detailed architecture.
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- GCP account with billing enabled
+- GCP account enabled
 - gcloud CLI installed
 
 ### Local Development
