@@ -1,0 +1,18 @@
+# Python packages installed into the custom Spark Docker image.
+# Keep this minimal — only what the Spark jobs actually import.
+
+# OCR
+pytesseract>=0.3.10
+pdf2image>=1.17.0
+pillow>=10.2.0
+pymupdf>=1.23.0
+
+# Embeddings + LLM
+openai>=1.10.0
+
+# Vector DB
+qdrant-client>=1.7.0
+
+# Utils
+python-dotenv>=1.0.0
+tenacity>=8.2.3

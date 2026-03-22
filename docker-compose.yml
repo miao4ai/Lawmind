@@ -1,0 +1,98 @@
+version: '3.8'
+
+# Local Spark cluster for Lawmind document processing pipeline.
+# Reads PDFs from storage/raw/, writes OCR + embedding output to storage/processed/.
+# Qdrant runs alongside for local vector indexing.
+#
+# Usage:
+#   docker-compose up -d          # start all services
+#   docker-compose down           # stop all services
+#   See scripts/run_spark_pipeline.sh for submitting jobs
+
+x-spark-common: &spark-common
+  build:
+    context: .
+    dockerfile: Dockerfile.spark
+  env_file: .env
+  environment:
+    # Python path so Spark workers can import tools/, shared/, etc.
+    - PYTHONPATH=/app
+    # Point to local Qdrant (in this compose network)
+    - QDRANT_URL=http://qdrant:6333
+  volumes:
+    # Mount entire project so workers can import from tools/, shared/, etc.
+    - .:/app
+    # Spark configuration
+    - ./spark/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf:ro
+    # Separate named volume for Spark work dirs (avoids polluting project tree)
+    - spark_work:/opt/bitnami/spark/work
+
+services:
+  # ── Spark Master ────────────────────────────────────────────────────────────
+  spark-master:
+    <<: *spark-common
+    container_name: lawmind-spark-master
+    environment:
+      - SPARK_MODE=master
+      - PYTHONPATH=/app
+      - QDRANT_URL=http://qdrant:6333
+    ports:
+      - "7077:7077"   # Spark submit endpoint
+      - "8081:8080"   # Spark Master Web UI  →  http://localhost:8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Spark Workers ────────────────────────────────────────────────────────────
+  spark-worker-1:
+    <<: *spark-common
+    container_name: lawmind-spark-worker-1
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=2
+      - PYTHONPATH=/app
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "8082:8081"   # Worker Web UI  →  http://localhost:8082
+
+  spark-worker-2:
+    <<: *spark-common
+    container_name: lawmind-spark-worker-2
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=2
+      - PYTHONPATH=/app
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "8083:8081"   # Worker Web UI  →  http://localhost:8083
+
+  # ── Qdrant (Vector DB) ───────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: lawmind-qdrant
+    ports:
+      - "6333:6333"   # REST API  →  http://localhost:6333/dashboard
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  spark_work:
+  qdrant_data:

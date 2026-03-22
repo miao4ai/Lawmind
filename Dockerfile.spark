@@ -1,0 +1,25 @@
+# Custom Spark image for Lawmind document processing.
+# Extends bitnami/spark:3.5 with:
+#   - tesseract-ocr + poppler-utils  (for pytesseract + pdf2image)
+#   - Python packages from requirements
+
+FROM bitnami/spark:3.5
+
+USER root
+
+# System deps for OCR
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    poppler-utils \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps needed by Spark jobs and tools/ imports
+COPY spark/requirements-spark.txt /tmp/requirements-spark.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-spark.txt
+
+# Set working dir (project is volume-mounted here at runtime)
+WORKDIR /app
+
+USER 1001
