@@ -1,25 +1,33 @@
 # Custom Spark image for Lawmind document processing.
 # Extends bitnami/spark:3.5 with:
 #   - tesseract-ocr + poppler-utils  (for pytesseract + pdf2image)
-#   - Python packages from requirements
+#   - GCS connector JAR              (for reading gs:// paths from Spark)
+#   - Python packages
 
 FROM bitnami/spark:3.5
 
 USER root
 
-# System deps for OCR
+# ── System deps ───────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     poppler-utils \
     libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps needed by Spark jobs and tools/ imports
+# ── GCS connector JAR ─────────────────────────────────────────────────────────
+# Allows Spark to read/write gs:// URIs directly.
+# bitnami/spark:3.5 uses Hadoop 3 — must use the hadoop3 variant of the connector.
+RUN curl -fsSL \
+    "https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-hadoop3-latest.jar" \
+    -o /opt/bitnami/spark/jars/gcs-connector-hadoop3-latest.jar
+
+# ── Python deps ───────────────────────────────────────────────────────────────
 COPY spark/requirements-spark.txt /tmp/requirements-spark.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-spark.txt
 
-# Set working dir (project is volume-mounted here at runtime)
 WORKDIR /app
 
 USER 1001

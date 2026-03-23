@@ -1,13 +1,22 @@
 version: '3.8'
 
 # Local Spark cluster for Lawmind document processing pipeline.
-# Reads PDFs from storage/raw/, writes OCR + embedding output to storage/processed/.
-# Qdrant runs alongside for local vector indexing.
+#
+# Supports two storage modes (controlled by --input / --output in run_spark_pipeline.sh):
+#   Local:  storage/raw/           storage/processed/
+#   GCS:    gs://<bucket>/raw/     gs://<bucket>/processed/
+#
+# Authentication:
+#   GCS:  place your service account JSON at credentials/service-account.json
+#         (see credentials/README.md)
+#   GKE:  run `gcloud container clusters get-credentials ...` on the host first;
+#         the ~/.kube/config is mounted read-only into the master for spark-submit
+#         to GKE (k8s:// master URL mode).
 #
 # Usage:
-#   docker-compose up -d          # start all services
-#   docker-compose down           # stop all services
-#   See scripts/run_spark_pipeline.sh for submitting jobs
+#   docker-compose up -d --build   # first time (builds custom image)
+#   docker-compose up -d           # subsequent starts
+#   bash scripts/run_spark_pipeline.sh [--gcs] [--gke]
 
 x-spark-common: &spark-common
   build:
@@ -15,20 +24,21 @@ x-spark-common: &spark-common
     dockerfile: Dockerfile.spark
   env_file: .env
   environment:
-    # Python path so Spark workers can import tools/, shared/, etc.
     - PYTHONPATH=/app
-    # Point to local Qdrant (in this compose network)
     - QDRANT_URL=http://qdrant:6333
+    # GCS auth: point to mounted service account key.
+    # Workers need this so GCS connector can authenticate on each executor.
+    - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
   volumes:
-    # Mount entire project so workers can import from tools/, shared/, etc.
+    # Entire project mounted — workers can import tools/, shared/, jobs/
     - .:/app
-    # Spark configuration
+    # Spark config (includes GCS connector settings)
     - ./spark/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf:ro
-    # Separate named volume for Spark work dirs (avoids polluting project tree)
+    # Spark work dir (separate volume to avoid polluting repo)
     - spark_work:/opt/bitnami/spark/work
 
 services:
-  # ── Spark Master ────────────────────────────────────────────────────────────
+  # ── Spark Master ─────────────────────────────────────────────────────────────
   spark-master:
     <<: *spark-common
     container_name: lawmind-spark-master
@@ -36,16 +46,27 @@ services:
       - SPARK_MODE=master
       - PYTHONPATH=/app
       - QDRANT_URL=http://qdrant:6333
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
     ports:
-      - "7077:7077"   # Spark submit endpoint
-      - "8081:8080"   # Spark Master Web UI  →  http://localhost:8081
+      - "7077:7077"   # spark-submit endpoint
+      - "8081:8080"   # Spark Master Web UI → http://localhost:8081
+    volumes:
+      - .:/app
+      - ./spark/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf:ro
+      - spark_work:/opt/bitnami/spark/work
+      # Kubeconfig for GKE submission (spark-submit --master k8s://...).
+      # Populated by: gcloud container clusters get-credentials ...
+      # Mount read-only; the master is the only node that needs it.
+      - ${KUBECONFIG:-~/.kube/config}:/root/.kube/config:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
       interval: 15s
       timeout: 5s
       retries: 5
 
-  # ── Spark Workers ────────────────────────────────────────────────────────────
+  # ── Spark Workers ─────────────────────────────────────────────────────────────
+  # Workers also need GOOGLE_APPLICATION_CREDENTIALS because each executor
+  # independently opens GCS files via the connector.
   spark-worker-1:
     <<: *spark-common
     container_name: lawmind-spark-worker-1
@@ -56,11 +77,12 @@ services:
       - SPARK_WORKER_CORES=2
       - PYTHONPATH=/app
       - QDRANT_URL=http://qdrant:6333
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
     depends_on:
       spark-master:
         condition: service_healthy
     ports:
-      - "8082:8081"   # Worker Web UI  →  http://localhost:8082
+      - "8082:8081"   # Worker UI → http://localhost:8082
 
   spark-worker-2:
     <<: *spark-common
@@ -72,18 +94,19 @@ services:
       - SPARK_WORKER_CORES=2
       - PYTHONPATH=/app
       - QDRANT_URL=http://qdrant:6333
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
     depends_on:
       spark-master:
         condition: service_healthy
     ports:
-      - "8083:8081"   # Worker Web UI  →  http://localhost:8083
+      - "8083:8081"   # Worker UI → http://localhost:8083
 
-  # ── Qdrant (Vector DB) ───────────────────────────────────────────────────────
+  # ── Qdrant ───────────────────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:v1.7.4
     container_name: lawmind-qdrant
     ports:
-      - "6333:6333"   # REST API  →  http://localhost:6333/dashboard
+      - "6333:6333"   # REST → http://localhost:6333/dashboard
       - "6334:6334"   # gRPC
     volumes:
       - qdrant_data:/qdrant/storage
