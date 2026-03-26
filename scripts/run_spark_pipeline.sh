@@ -116,10 +116,21 @@ if [[ "$RUN_EMBED" == "true" ]]; then
     fi
 fi
 
+# ── Common spark-submit options (must be defined before _submit() calls) ──────
+SPARK_SUBMIT_OPTS=(
+    "--conf" "spark.executor.memory=${EXECUTOR_MEMORY}"
+    "--conf" "spark.executor.cores=2"
+    "--conf" "spark.executorEnv.PYTHONPATH=/app"
+    "--conf" "spark.sql.shuffle.partitions=${PARTITIONS}"
+)
+
 # ── Resolve Spark master URL and submit mechanism ─────────────────────────────
 if [[ "$USE_GKE" == "true" ]]; then
     # ── GKE mode ──────────────────────────────────────────────────────────────
-    # Resolve the GKE API server from the current kubectl context.
+    # spark-submit must be installed locally to dispatch to GKE
+    if ! command -v spark-submit &>/dev/null; then
+        err "spark-submit not found on PATH.\nInstall Spark locally or use local cluster mode (drop --gke)."
+    fi
     if ! command -v kubectl &>/dev/null; then
         err "kubectl not found. Install it or run in local mode (drop --gke)."
     fi
@@ -186,14 +197,6 @@ else
 fi
 
 echo ""
-
-# ── Common spark-submit options ───────────────────────────────────────────────
-SPARK_SUBMIT_OPTS=(
-    "--conf" "spark.executor.memory=${EXECUTOR_MEMORY}"
-    "--conf" "spark.executor.cores=2"
-    "--conf" "spark.executorEnv.PYTHONPATH=/app"
-    "--conf" "spark.sql.shuffle.partitions=${PARTITIONS}"
-)
 
 # ── Stage 1: OCR ─────────────────────────────────────────────────────────────
 if [[ "$RUN_OCR" == "true" ]]; then
