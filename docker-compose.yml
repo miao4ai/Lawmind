@@ -101,6 +101,23 @@ services:
     ports:
       - "8083:8081"   # Worker UI → http://localhost:8083
 
+  spark-worker-3:
+    <<: *spark-common
+    container_name: lawmind-spark-worker-3
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=2
+      - PYTHONPATH=/app
+      - QDRANT_URL=http://qdrant:6333
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "8084:8081"   # Worker UI → http://localhost:8084
+
   # ── Qdrant ───────────────────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:v1.7.4

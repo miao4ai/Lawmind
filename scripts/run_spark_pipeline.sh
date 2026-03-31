@@ -37,7 +37,7 @@ USE_GKE=false
 RUN_OCR=true
 RUN_ANALYZE=true
 RUN_EMBED=true
-PARTITIONS=4
+PARTITIONS=6   # 3 workers × 2 cores
 EXECUTOR_MEMORY="3g"
 CONTAINER="lawmind-spark-master"
 
