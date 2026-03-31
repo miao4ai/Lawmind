@@ -2,29 +2,32 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # run_spark_pipeline.sh — Lawmind Spark document processing pipeline
 #
-# Runs two stages:
-#   Stage 1 (OCR):   PDF → extracted text     jobs/ocr_job.py
-#   Stage 2 (Embed): text → Qdrant vectors    jobs/embed_job.py
+# Stages:
+#   1. OCR      PDF → extracted text              jobs/ocr_job.py
+#   1.5 Analyze OCR quality + cost estimate       jobs/analyze_job.py
+#   2. Embed    text → chunks → Qdrant vectors    jobs/embed_job.py
 #
-# Storage modes (mutually exclusive):
-#   Default (local):  reads storage/raw/,          writes storage/processed/
-#   --gcs:            reads gs://<bucket>/raw/,     writes gs://<bucket>/processed/
+# Storage modes:
+#   Default (local):  reads storage/raw/,        writes storage/processed/
+#   --gcs:            reads gs://<bucket>/raw/,   writes gs://<bucket>/processed/
 #
-# Spark cluster modes (mutually exclusive):
-#   Default (local compose): submits to spark://spark-master:7077  (docker-compose)
-#   --gke:                   submits to k8s://<GKE endpoint>        (cloud)
+# Cluster modes:
+#   Default: local docker-compose  (spark://spark-master:7077)
+#   --gke:   GKE cluster           (k8s://<endpoint>)
 #
 # Prerequisites:
 #   docker-compose up -d --build     (local mode)
-#   credentials/service-account.json (for --gcs mode)
-#   gcloud container clusters get-credentials ...  (for --gke mode)
+#   credentials/service-account.json (--gcs mode)
+#   gcloud container clusters get-credentials ...  (--gke mode)
 #
 # Usage examples:
-#   bash scripts/run_spark_pipeline.sh                        # local PDFs, local cluster
-#   bash scripts/run_spark_pipeline.sh --gcs                  # GCS PDFs, local cluster
-#   bash scripts/run_spark_pipeline.sh --gcs --gke            # GCS PDFs, GKE cluster
-#   bash scripts/run_spark_pipeline.sh --ocr-only             # stage 1 only
-#   bash scripts/run_spark_pipeline.sh --embed-only --gcs     # stage 2 only, from GCS
+#   bash scripts/run_spark_pipeline.sh                     # full pipeline, local
+#   bash scripts/run_spark_pipeline.sh --gcs               # full pipeline, GCS
+#   bash scripts/run_spark_pipeline.sh --ocr-only          # stage 1 only
+#   bash scripts/run_spark_pipeline.sh --analyze-only      # stage 1.5 only
+#   bash scripts/run_spark_pipeline.sh --ocr-only --gcs    # OCR from GCS
+#   bash scripts/run_spark_pipeline.sh --embed-only --gcs  # embed from GCS
+#   bash scripts/run_spark_pipeline.sh --gcs --gke         # full pipeline on GKE
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -32,6 +35,7 @@ set -euo pipefail
 USE_GCS=false
 USE_GKE=false
 RUN_OCR=true
+RUN_ANALYZE=true
 RUN_EMBED=true
 PARTITIONS=4
 EXECUTOR_MEMORY="3g"
@@ -40,30 +44,34 @@ CONTAINER="lawmind-spark-master"
 # Paths (overridden when --gcs is set)
 INPUT_DIR="/app/storage/raw"
 OCR_OUT="/app/storage/processed/ocr"
+ANALYZE_OUT="/app/storage/processed/analysis"
 EMBED_OUT="/app/storage/processed/embeddings"
 
 # GKE settings (used only with --gke)
-GKE_SPARK_IMAGE=""            # e.g. gcr.io/your-project/spark-lawmind:latest
+GKE_SPARK_IMAGE=""
 GKE_NAMESPACE="spark"
 GKE_SA="spark"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --gcs)               USE_GCS=true;             shift ;;
-        --gke)               USE_GKE=true;             shift ;;
-        --ocr-only)          RUN_EMBED=false;          shift ;;
-        --embed-only)        RUN_OCR=false;            shift ;;
-        --input)             INPUT_DIR="$2";           shift 2 ;;
-        --ocr-out)           OCR_OUT="$2";             shift 2 ;;
-        --embed-out)         EMBED_OUT="$2";           shift 2 ;;
-        --partitions)        PARTITIONS="$2";          shift 2 ;;
-        --memory)            EXECUTOR_MEMORY="$2";     shift 2 ;;
-        --gke-image)         GKE_SPARK_IMAGE="$2";     shift 2 ;;
-        --gke-namespace)     GKE_NAMESPACE="$2";       shift 2 ;;
-        --container)         CONTAINER="$2";           shift 2 ;;
+        --gcs)               USE_GCS=true;                    shift ;;
+        --gke)               USE_GKE=true;                    shift ;;
+        --ocr-only)          RUN_ANALYZE=false; RUN_EMBED=false; shift ;;
+        --analyze-only)      RUN_OCR=false;     RUN_EMBED=false; shift ;;
+        --embed-only)        RUN_OCR=false;     RUN_ANALYZE=false; shift ;;
+        --skip-analyze)      RUN_ANALYZE=false;               shift ;;
+        --input)             INPUT_DIR="$2";                  shift 2 ;;
+        --ocr-out)           OCR_OUT="$2";                    shift 2 ;;
+        --analyze-out)       ANALYZE_OUT="$2";                shift 2 ;;
+        --embed-out)         EMBED_OUT="$2";                  shift 2 ;;
+        --partitions)        PARTITIONS="$2";                 shift 2 ;;
+        --memory)            EXECUTOR_MEMORY="$2";            shift 2 ;;
+        --gke-image)         GKE_SPARK_IMAGE="$2";            shift 2 ;;
+        --gke-namespace)     GKE_NAMESPACE="$2";              shift 2 ;;
+        --container)         CONTAINER="$2";                  shift 2 ;;
         -h|--help)
-            sed -n '2,25p' "$0" | sed 's/^# \{0,2\}//'
+            sed -n '2,30p' "$0" | sed 's/^# \{0,2\}//'
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -82,7 +90,6 @@ echo ""
 
 # ── Resolve GCS paths ─────────────────────────────────────────────────────────
 if [[ "$USE_GCS" == "true" ]]; then
-    # Load GCS_BUCKET from .env if not already set
     if [[ -z "${GCS_BUCKET:-}" ]] && [[ -f .env ]]; then
         GCS_BUCKET=$(grep -E '^GCP_STORAGE_BUCKET=' .env | cut -d= -f2 | tr -d '"' || true)
     fi
@@ -91,6 +98,7 @@ if [[ "$USE_GCS" == "true" ]]; then
     fi
     INPUT_DIR="gs://${GCS_BUCKET}/raw"
     OCR_OUT="gs://${GCS_BUCKET}/processed/ocr"
+    ANALYZE_OUT="gs://${GCS_BUCKET}/processed/analysis"
     EMBED_OUT="gs://${GCS_BUCKET}/processed/embeddings"
     log "Storage: GCS  (bucket: ${GCS_BUCKET})"
 else
@@ -98,8 +106,6 @@ else
 fi
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
-
-# GCS credential check
 if [[ "$USE_GCS" == "true" ]]; then
     if [[ ! -f "credentials/service-account.json" ]]; then
         err "credentials/service-account.json not found.\nSee credentials/README.md for setup instructions."
@@ -107,7 +113,6 @@ if [[ "$USE_GCS" == "true" ]]; then
     ok "GCS service account key found"
 fi
 
-# OPENAI_API_KEY check (needed for Stage 2)
 if [[ "$RUN_EMBED" == "true" ]]; then
     if ! grep -q "OPENAI_API_KEY=sk-" .env 2>/dev/null && [[ -z "${OPENAI_API_KEY:-}" ]]; then
         warn "OPENAI_API_KEY not found — Stage 2 (embed) will fail without it"
@@ -116,7 +121,7 @@ if [[ "$RUN_EMBED" == "true" ]]; then
     fi
 fi
 
-# ── Common spark-submit options (must be defined before _submit() calls) ──────
+# ── Common spark-submit options (defined before _submit() functions) ──────────
 SPARK_SUBMIT_OPTS=(
     "--conf" "spark.executor.memory=${EXECUTOR_MEMORY}"
     "--conf" "spark.executor.cores=2"
@@ -124,10 +129,8 @@ SPARK_SUBMIT_OPTS=(
     "--conf" "spark.sql.shuffle.partitions=${PARTITIONS}"
 )
 
-# ── Resolve Spark master URL and submit mechanism ─────────────────────────────
+# ── Resolve cluster + define _submit() ───────────────────────────────────────
 if [[ "$USE_GKE" == "true" ]]; then
-    # ── GKE mode ──────────────────────────────────────────────────────────────
-    # spark-submit must be installed locally to dispatch to GKE
     if ! command -v spark-submit &>/dev/null; then
         err "spark-submit not found on PATH.\nInstall Spark locally or use local cluster mode (drop --gke)."
     fi
@@ -142,29 +145,23 @@ if [[ "$USE_GKE" == "true" ]]; then
     ok "GKE endpoint: ${GKE_ENDPOINT}"
 
     if [[ -z "$GKE_SPARK_IMAGE" ]]; then
-        # Try to read from .env
         GKE_SPARK_IMAGE=$(grep -E '^GKE_SPARK_IMAGE=' .env 2>/dev/null | cut -d= -f2 | tr -d '"' || true)
     fi
     if [[ -z "$GKE_SPARK_IMAGE" ]]; then
         err "GKE_SPARK_IMAGE not set. Pass --gke-image gcr.io/your-project/spark-lawmind:latest or add to .env"
     fi
 
-    # GKE-specific spark-submit flags
     GKE_CONF=(
         "--conf" "spark.kubernetes.container.image=${GKE_SPARK_IMAGE}"
         "--conf" "spark.kubernetes.namespace=${GKE_NAMESPACE}"
         "--conf" "spark.kubernetes.authenticate.serviceAccountName=${GKE_SA}"
-        # On GKE with Workload Identity, executors get GCP auth from the pod SA.
-        # No key file needed — override the local SA key setting.
         "--conf" "spark.hadoop.google.cloud.auth.type=APPLICATION_DEFAULT"
         "--conf" "spark.executor.instances=3"
         "--deploy-mode" "cluster"
     )
 
-    # GKE: spark-submit runs locally (not inside docker exec)
     _submit() {
-        local job_script="$1"
-        shift
+        local job_script="$1"; shift
         spark-submit \
             --master "${SPARK_MASTER}" \
             "${GKE_CONF[@]}" \
@@ -174,7 +171,6 @@ if [[ "$USE_GKE" == "true" ]]; then
     log "Cluster: GKE  (${SPARK_MASTER})"
 
 else
-    # ── Local docker-compose mode ──────────────────────────────────────────────
     if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
         err "Container '${CONTAINER}' is not running.\nRun: docker-compose up -d --build"
     fi
@@ -183,8 +179,7 @@ else
     GKE_CONF=()
 
     _submit() {
-        local job_script="$1"
-        shift
+        local job_script="$1"; shift
         docker exec \
             -e PYTHONPATH=/app \
             "${CONTAINER}" \
@@ -214,6 +209,22 @@ if [[ "$RUN_OCR" == "true" ]]; then
     echo ""
 fi
 
+# ── Stage 1.5: Analyze ───────────────────────────────────────────────────────
+if [[ "$RUN_ANALYZE" == "true" ]]; then
+    bold "── Stage 1.5: Analyze (OCR quality + cost estimate) ──"
+    log "Input:  ${OCR_OUT}"
+    log "Output: ${ANALYZE_OUT}"
+    echo ""
+
+    _submit /app/jobs/analyze_job.py \
+        --input      "${OCR_OUT}" \
+        --output     "${ANALYZE_OUT}" \
+        --partitions "${PARTITIONS}"
+
+    ok "Stage 1.5 complete"
+    echo ""
+fi
+
 # ── Stage 2: Embed + Index ────────────────────────────────────────────────────
 if [[ "$RUN_EMBED" == "true" ]]; then
     bold "── Stage 2: Embed + Index (text → Qdrant) ──"
@@ -234,13 +245,15 @@ fi
 bold "=== Pipeline complete ==="
 echo ""
 if [[ "$USE_GKE" != "true" ]]; then
-    echo "  Spark UI:     http://localhost:8081"
-    echo "  Qdrant:       http://localhost:6333/dashboard"
+    echo "  Spark UI:         http://localhost:8081"
+    echo "  Qdrant:           http://localhost:6333/dashboard"
 fi
 if [[ "$USE_GCS" == "true" ]]; then
-    echo "  OCR output:   gs://${GCS_BUCKET}/processed/ocr/"
-    echo "  Embed output: gs://${GCS_BUCKET}/processed/embeddings/"
+    echo "  OCR output:       gs://${GCS_BUCKET}/processed/ocr/"
+    echo "  Analysis output:  gs://${GCS_BUCKET}/processed/analysis/"
+    echo "  Embed output:     gs://${GCS_BUCKET}/processed/embeddings/"
 else
-    echo "  OCR output:   storage/processed/ocr/"
-    echo "  Embed output: storage/processed/embeddings/"
+    echo "  OCR output:       storage/processed/ocr/"
+    echo "  Analysis output:  storage/processed/analysis/"
+    echo "  Embed output:     storage/processed/embeddings/"
 fi
